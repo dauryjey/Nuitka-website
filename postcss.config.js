@@ -59,10 +59,40 @@ module.exports = {
 						rule.params = "(min-width: 1192px)";
 					}
 				});
+
+			root.walkRules((rule) => {
+					// Keep rules that contain fa-fw to avoid breaking SVG width, some of these uses fa-fw for width	control
+					if (rule.selector.match(/\.fa([srb]?|\-)/) && !rule.selector.includes("fa-fw")) {
+							rule.remove();
+					}
+			});
 			},
 		},
 
 		require("autoprefixer"),
+
+		require("@fullhuman/postcss-purgecss").default({
+			content: ["output/**/*.html"],
+			safelist: [
+				// Font Awesome classes
+				/^fa-/,
+				/^fas$/,
+				/^far$/,
+				/^fab$/,
+				/^fa$/,
+				// Sphinx Design classes
+				/^sd-/,
+				// Hub-related classes
+				/^hub-/,
+				// Classes that might be added by JS
+				/^carousel/,
+				/^active$/,
+				/^current/,
+				// Utility classes
+				/^highlight/,
+			],
+			defaultExtractor: (content) => content.match(/[\w-/:]+(?<!:)/g) || [],
+		}),
 
 		require("cssnano")({
 			preset: [

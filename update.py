@@ -109,6 +109,14 @@ from nuitka.utils.Hashing import getHashFromValues
 from nuitka.utils.Jinja2 import getTemplate
 from nuitka.utils.ReExecute import callExecProcess
 from nuitka.utils.Rest import makeTable
+from tests.const import (
+    BROWSERS,
+    DEFAULT_WAIT_TIME,
+    GOLDEN_DIR,
+    GOLDEN_PAGES,
+    VIEWPORTS,
+)
+from tests.utils import update_golden_images
 
 development_mode = os.getenv("DEVELOPMENT_MODE") == "1"
 FA_STYLE_MAP = {
@@ -136,11 +144,22 @@ FA_UTILITY_CLASSES = {
 }
 
 FA_SVG_PATH = "site/images/fontawesome"
+SVG_SOURCE_PATH = "images/svg"
 
 FA_REPLACEMENT_CLASS = {
     "fa": "nuitka-fa",
     "fa-fw": "nuitka-fw",
 }
+
+
+SVG_CACHE = {}
+
+def get_svg_content(svg_path):
+    if svg_path not in SVG_CACHE:
+        if not os.path.exists(svg_path):
+            raise FileNotFoundError(f"SVG not found: {svg_path}")
+        SVG_CACHE[svg_path] = getFileContents(svg_path, encoding="utf-8")
+    return SVG_CACHE[svg_path]
 
 def add_inline_svg(
     element, svg_path, is_fa_icon=False, style_folder=None, icon_name=None
@@ -157,7 +176,7 @@ def add_inline_svg(
 
         raise FileNotFoundError(f"SVG file not found: {svg_path}")
 
-    svg_content = getFileContents(svg_path, encoding="utf-8")
+    svg_content = get_svg_content(svg_path)
     svg_content = re.sub(r"<!--.*?-->", "", svg_content, flags=re.DOTALL)
 
     svg_element = html.fragment_fromstring(svg_content, create_parent=False)
@@ -223,15 +242,13 @@ def inlineImagesSvg(doc, filename):
         if src.startswith(("http://", "https://")):
             continue
 
-        svg_path = os.path.join(
-            os.path.dirname(__file__),
-            os.path.join(os.path.dirname(filename), src).lstrip("/"),
-        )
+        src_clean = os.path.basename(src)
+
+        svg_path = f"{SVG_SOURCE_PATH}/{src_clean}"
 
         assert os.path.exists(svg_path), (filename, src, svg_path)
 
         add_inline_svg(img_tag, svg_path)
-
 
 def inlineFontAwesomeSvg(doc):
     for i_tag in doc.xpath("//i[contains(@class, 'fa')]"):
@@ -850,20 +867,6 @@ def _getTranslationFileSet(filename):
     return language, filename_translations
 
 
-js_order = [
-    "jquery.js",
-    "carousel.js",
-    "documentation_options.js",
-    "_sphinx_javascript_frameworks_compat.js",
-    "doctools.js",
-    "sphinx_highlight.js",
-    "theme.js",
-    "clipboard.min.js",
-    "copybutton.js",
-    "translations.js",
-]
-
-
 def _makeCssCombined(css_filenames, css_links, has_asciinema):
     # Simply concatenate CSS files - let PostCSS handle the processing
     merged_css = "\n".join(
@@ -899,15 +902,13 @@ def _makeCssCombined(css_filenames, css_links, has_asciinema):
 def _makeJsCombined(js_filenames):
     js_filenames = list(js_filenames)
 
-    js_set_contents = (
+    js_set_contents = """
+    const jQuery = {};
+    jQuery.fn = {};
+    """ + (
         "\n".join(
             getFileContents(f"output/{js_filename}") for js_filename in js_filenames
         )
-        + """
-jQuery(function () {
-    SphinxRtdTheme.Navigation.enable(true);
-});
-    """
         + """
 (function() {
 var id = '82f00db2-cffd-11ee-882e-0242ac130002';
@@ -975,9 +976,11 @@ _postcss_cache = {}
 
 
 def _processWithPostCSS(css_content):
-    """Process CSS content through PostCSS"""
+    """Process CSS content through PostCSS with PurgeCSS"""
     if css_content in _postcss_cache:
         return _postcss_cache[css_content]
+
+    original_size = len(css_content)
 
     with withTemporaryFile(suffix=".css", mode="w", delete=False) as tmp_input:
         tmp_input.write(css_content)
@@ -1001,6 +1004,18 @@ def _processWithPostCSS(css_content):
             my_print(f"PostCSS processing failed: {result.stderr.strip()}")
             return None
 
+        # Read processed CSS
+        processed_css = getFileContents(tmp_output_path)
+        _postcss_cache[css_content] = processed_css
+
+        # Report CSS size reduction
+        processed_size = len(processed_css)
+        if original_size > 0:
+            reduction_percent = (original_size - processed_size) / original_size * 100
+            my_print(
+                f"CSS reduced by {reduction_percent:.1f}% ({original_size} → {processed_size} bytes)"
+            )
+
     except Exception as e:
         my_print(f"Unexpected error running PostCSS: {e}")
         return None
@@ -1009,8 +1024,8 @@ def _processWithPostCSS(css_content):
 
     _postcss_cache[css_content] = result
 
-    os.remove(tmp_input_path)
-    os.remove(tmp_output_path)
+    deleteFile(tmp_input_path, must_exist=False)
+    deleteFile(tmp_output_path, must_exist=False)
 
     return result
 
@@ -1144,12 +1159,25 @@ def handleJavaScript(filename, doc):
     if script_tag_first is not None:
         script_tag_first.attrib["src"] = _makeJsCombined(js_filenames)
 
+def cleanBuildSVGs():
+    for dirpath, dirnames, filenames in os.walk("output/_images"):
+        for filename in filenames:
+            if not filename.endswith(".svg"):
+                continue
+
+            deleteFile(os.path.join(dirpath, filename), must_exist=False)
 
 def runPostProcessing():
     # Compress the CSS and JS files into one file, clean up links, and
     # do other touch ups. spell-checker: ignore searchindex,searchtools
 
-    for delete_filename in ("searchindex.js", "searchtools.js", "search.html"):
+    for delete_filename in (
+        "searchindex.js",
+        "searchtools.js",
+        "search.html",
+        "_static/jquery.js",
+    ):
+        print("removing", os.path.join("output", delete_filename))
         deleteFile(os.path.join("output", delete_filename), must_exist=False)
         for translation in _translations:
             deleteFile(
@@ -1433,6 +1461,8 @@ def runPostProcessing():
             os.unlink(my_theme_filename)
             os.symlink(os.path.abspath("_static/my_theme.css"), my_theme_filename)
 
+    cleanBuildSVGs()
+
 
 def runDeploymentCommand():
     # spell-checker: ignore doctrees,buildinfo,apidoc
@@ -1497,13 +1527,14 @@ def runSphinxAutoBuild():
 
     callExecProcess(args, uac=False)
 
+
 tests_dir = Path(__file__).parent / "tests"
 sys.path.insert(0, str(tests_dir.resolve()))
 
-from tests.utils import update_golden_images
-from tests.const import BROWSERS, VIEWPORTS, GOLDEN_PAGES, GOLDEN_DIR, DEFAULT_WAIT_TIME
 
-def runUpdateGolden(browsers=None, devices=None, pages=None, wait=None, clean=False, verbose=False):
+def runUpdateGolden(
+    browsers=None, devices=None, pages=None, wait=None, clean=False, verbose=False
+):
     browsers = browsers or BROWSERS
     devices = devices or list(VIEWPORTS.keys())
     pages = pages or GOLDEN_PAGES
@@ -1535,12 +1566,13 @@ def runUpdateGolden(browsers=None, devices=None, pages=None, wait=None, clean=Fa
             browsers_to_use=browsers,
             modes_to_use=devices,
             pages_to_update=pages,
-            wait_time=wait
+            wait_time=wait,
         )
         my_print("Update completed successfully!")
     except Exception as e:
         my_print(f"Error during update: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -1655,28 +1687,28 @@ When given, the site is deployed. Default %default.""",
         action="store_true",
         dest="update_golden",
         default=False,
-        help="Update reference images"
+        help="Update reference images",
     )
 
     parser.add_option(
         "--browsers",
         dest="browsers",
         default=None,
-        help="Comma-separated list of browsers to use"
+        help="Comma-separated list of browsers to use",
     )
 
     parser.add_option(
         "--devices",
         dest="devices",
         default=None,
-        help="Comma-separated list of device types to use"
+        help="Comma-separated list of device types to use",
     )
 
     parser.add_option(
         "--pages",
         dest="pages",
         default=None,
-        help="Comma-separated list of pages to update"
+        help="Comma-separated list of pages to update",
     )
 
     parser.add_option(
@@ -1684,7 +1716,7 @@ When given, the site is deployed. Default %default.""",
         type="int",
         dest="wait",
         default=None,
-        help="Wait time in milliseconds before capture"
+        help="Wait time in milliseconds before capture",
     )
 
     parser.add_option(
@@ -1692,7 +1724,7 @@ When given, the site is deployed. Default %default.""",
         action="store_true",
         dest="clean",
         default=False,
-        help="Clean images directory before updating"
+        help="Clean images directory before updating",
     )
 
     parser.add_option(
@@ -1700,7 +1732,7 @@ When given, the site is deployed. Default %default.""",
         action="store_true",
         dest="verbose",
         default=False,
-        help="Show detailed information during execution"
+        help="Show detailed information during execution",
     )
 
     options, positional_args = parser.parse_args()
@@ -1733,8 +1765,9 @@ When given, the site is deployed. Default %default.""",
             pages=options.pages.split(",") if options.pages else None,
             wait=options.wait,
             clean=options.clean,
-            verbose=options.verbose
+            verbose=options.verbose,
         )
+
 
 if __name__ == "__main__":
     importNuitka()

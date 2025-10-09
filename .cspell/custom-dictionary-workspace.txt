@@ -20,6 +20,7 @@ clcache"
 conda"
 copybutton
 ctypes"
+Cython
 Dejong"
 devcontainer"
 devel"
@@ -101,6 +102,7 @@ redist"
 Roadmap"
 Roboto
 runpy"
+Scons
 Scons"
 segfault
 segfaulted
@@ -121,6 +123,7 @@ Uncompiled
 uncompiled"
 unidecode
 unstripped"
+Valgrind
 virtualenv"
 whitebox"
 zstandard
